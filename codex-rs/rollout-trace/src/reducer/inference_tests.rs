@@ -1,9 +1,11 @@
+use codex_protocol::protocol::CodexErrorInfo;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
 
 use crate::model::ConversationItemKind;
 use crate::model::ExecutionStatus;
+use crate::model::InferenceFailure;
 use crate::payload::RawPayloadKind;
 use crate::raw_event::RawTraceEventPayload;
 use crate::reducer::test_support::append_inference_start;
@@ -11,6 +13,73 @@ use crate::reducer::test_support::create_started_writer;
 use crate::reducer::test_support::message;
 use crate::reducer::test_support::start_turn;
 use crate::replay_bundle;
+
+#[test]
+fn legacy_inference_failure_deserializes_without_structured_metadata() -> anyhow::Result<()> {
+    let payload: RawTraceEventPayload = serde_json::from_value(json!({
+        "type": "inference_failed",
+        "inference_call_id": "inference-1",
+        "upstream_request_id": "req-1",
+        "error": "legacy failure",
+        "partial_response_payload": null
+    }))?;
+
+    assert_eq!(
+        payload,
+        RawTraceEventPayload::InferenceFailed {
+            inference_call_id: "inference-1".to_string(),
+            upstream_request_id: Some("req-1".to_string()),
+            http_status_code: None,
+            codex_error_info: None,
+            mapped_error_retryable: None,
+            error: "legacy failure".to_string(),
+            partial_response_payload: None,
+        },
+    );
+
+    Ok(())
+}
+
+#[test]
+fn failed_inference_reduces_structured_metadata() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let writer = create_started_writer(&temp)?;
+    start_turn(&writer, "turn-1")?;
+
+    let request = writer.write_json_payload(
+        RawPayloadKind::InferenceRequest,
+        &json!({
+            "input": [message("user", "retry")]
+        }),
+    )?;
+    append_inference_start(&writer, "inference-1", "turn-1", request)?;
+    writer.append(RawTraceEventPayload::InferenceFailed {
+        inference_call_id: "inference-1".to_string(),
+        upstream_request_id: Some("req-1".to_string()),
+        http_status_code: Some(400),
+        codex_error_info: Some(CodexErrorInfo::InternalServerError),
+        mapped_error_retryable: Some(true),
+        error: "internal server error".to_string(),
+        partial_response_payload: None,
+    })?;
+
+    let rollout = replay_bundle(temp.path())?;
+    let inference = &rollout.inference_calls["inference-1"];
+
+    assert_eq!(inference.execution.status, ExecutionStatus::Failed);
+    assert_eq!(inference.upstream_request_id, Some("req-1".to_string()));
+    assert_eq!(
+        inference.failure,
+        Some(InferenceFailure {
+            message: "internal server error".to_string(),
+            http_status_code: Some(400),
+            codex_error_info: Some(CodexErrorInfo::InternalServerError),
+            mapped_error_retryable: Some(true),
+        }),
+    );
+
+    Ok(())
+}
 
 #[test]
 fn cancelled_inference_reduces_partial_response_items() -> anyhow::Result<()> {

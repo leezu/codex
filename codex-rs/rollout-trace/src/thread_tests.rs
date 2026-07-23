@@ -16,6 +16,7 @@ use super::*;
 use crate::AgentResultTracePayload;
 use crate::CompactionCheckpointTracePayload;
 use crate::ExecutionStatus;
+use crate::InferenceFailureMetadata;
 use crate::RawTraceEventPayload;
 use crate::RolloutStatus;
 use crate::replay_bundle;
@@ -134,7 +135,7 @@ fn disabled_thread_context_accepts_trace_calls_without_writing() -> anyhow::Resu
     inference_attempt.record_started(&serde_json::json!({ "kind": "inference" }));
     let token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
     inference_attempt.record_completed("response-1", Some("req-1"), &token_usage, &[]);
-    inference_attempt.record_failed("inference failed", /*upstream_request_id*/ None, &[]);
+    inference_attempt.record_failed("inference failed", InferenceFailureMetadata::default(), &[]);
 
     let compaction_trace = thread_trace.compaction_trace_context(
         "turn-1",

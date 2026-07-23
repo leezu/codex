@@ -30,6 +30,8 @@ pub use compaction::CompactionCheckpointTracePayload;
 pub use compaction::CompactionTraceAttempt;
 /// Shared recorder context for a compaction checkpoint.
 pub use compaction::CompactionTraceContext;
+/// Structured metadata retained alongside a failed inference attempt.
+pub use inference::InferenceFailureMetadata;
 /// No-op-capable handle for recording one upstream inference attempt.
 pub use inference::InferenceTraceAttempt;
 /// Shared recorder context for inference attempts within one Codex turn.

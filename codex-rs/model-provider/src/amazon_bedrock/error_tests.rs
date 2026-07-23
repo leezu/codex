@@ -75,3 +75,31 @@ fn signature_errors_with_other_statuses_remain_generic() {
     };
     assert_eq!(response.user_message, None);
 }
+
+#[test]
+fn internal_server_error_reported_as_bad_request_is_retryable() {
+    let error = map_api_error(http_error(
+        StatusCode::BAD_REQUEST,
+        " Internal server error ",
+    ));
+
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InternalServerError
+    ));
+    assert!(error.is_retryable());
+}
+
+#[test]
+fn other_bad_requests_remain_invalid_requests() {
+    let error = map_api_error(http_error(
+        StatusCode::BAD_REQUEST,
+        "Internal server error while validating input",
+    ));
+
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
+    assert!(!error.is_retryable());
+}

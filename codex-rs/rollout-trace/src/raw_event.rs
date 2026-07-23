@@ -15,6 +15,7 @@ use crate::model::ToolCallId;
 use crate::model::ToolCallKind;
 use crate::model::ToolCallSummary;
 use crate::payload::RawPayloadRef;
+use codex_protocol::protocol::CodexErrorInfo;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -113,6 +114,15 @@ pub enum RawTraceEventPayload {
         /// Provider transport request id, such as `x-request-id`, when the
         /// provider returned one before the stream failed.
         upstream_request_id: Option<String>,
+        /// Original HTTP status observed before provider-specific error mapping.
+        #[serde(default)]
+        http_status_code: Option<u16>,
+        /// Client-facing category produced by mapping the provider error.
+        #[serde(default)]
+        codex_error_info: Option<CodexErrorInfo>,
+        /// Whether the mapped error is eligible for the normal turn retry loop.
+        #[serde(default)]
+        mapped_error_retryable: Option<bool>,
         error: String,
         /// Partial response payload, when stream events arrived before failure.
         partial_response_payload: Option<RawPayloadRef>,

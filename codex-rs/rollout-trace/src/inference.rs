@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -75,6 +76,22 @@ struct EnabledInferenceTraceAttempt {
     context: EnabledInferenceTraceContext,
     inference_call_id: InferenceCallId,
     terminal_recorded: AtomicBool,
+}
+
+/// Structured metadata retained alongside a failed inference attempt.
+///
+/// Callers should capture the transport status before mapping the provider
+/// error because provider-specific mappings may intentionally discard it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InferenceFailureMetadata<'a> {
+    /// Provider transport request id, such as `x-request-id`.
+    pub upstream_request_id: Option<&'a str>,
+    /// Original HTTP status observed before provider-specific error mapping.
+    pub http_status_code: Option<u16>,
+    /// Client-facing category produced by mapping the provider error.
+    pub codex_error_info: Option<CodexErrorInfo>,
+    /// Whether the mapped error is eligible for the normal turn retry loop.
+    pub mapped_error_retryable: Option<bool>,
 }
 
 /// Non-delta response payload saved for completed or interrupted inference streams.
@@ -237,7 +254,7 @@ impl InferenceTraceAttempt {
     pub fn record_failed(
         &self,
         error: impl Display,
-        upstream_request_id: Option<&str>,
+        metadata: InferenceFailureMetadata<'_>,
         output_items: &[ResponseItem],
     ) {
         let Some(attempt) = self.take_terminal_attempt() else {
@@ -249,7 +266,7 @@ impl InferenceTraceAttempt {
             write_response_payload_best_effort(
                 attempt,
                 /*response_id*/ None,
-                upstream_request_id,
+                metadata.upstream_request_id,
                 /*token_usage*/ None,
                 output_items,
             )
@@ -258,7 +275,10 @@ impl InferenceTraceAttempt {
             &attempt.context,
             RawTraceEventPayload::InferenceFailed {
                 inference_call_id: attempt.inference_call_id.clone(),
-                upstream_request_id: upstream_request_id.map(str::to_string),
+                upstream_request_id: metadata.upstream_request_id.map(str::to_string),
+                http_status_code: metadata.http_status_code,
+                codex_error_info: metadata.codex_error_info,
+                mapped_error_retryable: metadata.mapped_error_retryable,
                 error: error.to_string(),
                 partial_response_payload,
             },

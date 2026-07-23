@@ -11,6 +11,7 @@ use crate::model::ExecutionStatus;
 use crate::model::ExecutionWindow;
 use crate::model::InferenceCall;
 use crate::model::InferenceCallId;
+use crate::model::InferenceFailure;
 use crate::payload::RawPayloadRef;
 use crate::raw_event::RawEventSeq;
 use crate::raw_event::RawTraceEventPayload;
@@ -94,6 +95,7 @@ impl TraceReducer {
                 provider_name: started.provider_name,
                 response_id: None,
                 upstream_request_id: None,
+                failure: None,
                 request_item_ids,
                 response_item_ids: Vec::new(),
                 tool_call_ids_started_by_response: Vec::new(),
@@ -141,46 +143,63 @@ impl TraceReducer {
         wall_time_unix_ms: i64,
         payload: RawTraceEventPayload,
     ) -> Result<()> {
-        let (inference_call_id, status, response_id, upstream_request_id, response_payload) =
-            match payload {
-                RawTraceEventPayload::InferenceCompleted {
-                    inference_call_id,
-                    response_id,
-                    upstream_request_id,
-                    response_payload,
-                } => (
-                    inference_call_id,
-                    ExecutionStatus::Completed,
-                    response_id,
-                    upstream_request_id,
-                    Some(response_payload),
-                ),
-                RawTraceEventPayload::InferenceFailed {
-                    inference_call_id,
-                    upstream_request_id,
-                    partial_response_payload,
-                    ..
-                } => (
-                    inference_call_id,
-                    ExecutionStatus::Failed,
-                    None,
-                    upstream_request_id,
-                    partial_response_payload,
-                ),
-                RawTraceEventPayload::InferenceCancelled {
-                    inference_call_id,
-                    upstream_request_id,
-                    partial_response_payload,
-                    ..
-                } => (
-                    inference_call_id,
-                    ExecutionStatus::Cancelled,
-                    None,
-                    upstream_request_id,
-                    partial_response_payload,
-                ),
-                _ => bail!("complete_inference_call received a non-terminal inference event"),
-            };
+        let (
+            inference_call_id,
+            status,
+            response_id,
+            upstream_request_id,
+            failure,
+            response_payload,
+        ) = match payload {
+            RawTraceEventPayload::InferenceCompleted {
+                inference_call_id,
+                response_id,
+                upstream_request_id,
+                response_payload,
+            } => (
+                inference_call_id,
+                ExecutionStatus::Completed,
+                response_id,
+                upstream_request_id,
+                None,
+                Some(response_payload),
+            ),
+            RawTraceEventPayload::InferenceFailed {
+                inference_call_id,
+                upstream_request_id,
+                http_status_code,
+                codex_error_info,
+                mapped_error_retryable,
+                error,
+                partial_response_payload,
+            } => (
+                inference_call_id,
+                ExecutionStatus::Failed,
+                None,
+                upstream_request_id,
+                Some(InferenceFailure {
+                    message: error,
+                    http_status_code,
+                    codex_error_info,
+                    mapped_error_retryable,
+                }),
+                partial_response_payload,
+            ),
+            RawTraceEventPayload::InferenceCancelled {
+                inference_call_id,
+                upstream_request_id,
+                partial_response_payload,
+                ..
+            } => (
+                inference_call_id,
+                ExecutionStatus::Cancelled,
+                None,
+                upstream_request_id,
+                None,
+                partial_response_payload,
+            ),
+            _ => bail!("complete_inference_call received a non-terminal inference event"),
+        };
 
         if !self
             .rollout
@@ -201,6 +220,7 @@ impl TraceReducer {
                 bail!("inference call {inference_call_id} disappeared during response reduction");
             };
             inference.response_id = response_id;
+            inference.failure = failure;
             // Turn-end cleanup can close a stream before the async mapper observes
             // cancellation. Preserve that terminal status while still retaining any
             // late partial response evidence from the mapper.

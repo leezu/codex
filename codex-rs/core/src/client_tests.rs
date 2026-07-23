@@ -36,16 +36,19 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::ExecutionStatus;
+use codex_rollout_trace::InferenceFailure;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_rollout_trace::RawTraceEventPayload;
@@ -651,6 +654,62 @@ async fn response_stream_records_last_model_feedback_ids() {
         tags.get("last_model_response_id").map(String::as_str),
         Some("\"resp-123\"")
     );
+}
+
+#[tokio::test]
+async fn bedrock_failure_trace_retains_http_status_and_mapped_error() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let attempt = started_inference_attempt(&temp)?;
+    let api_stream = futures::stream::iter([Err(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("https://bedrock.example/v1/responses".to_string()),
+        headers: None,
+        body: Some("Internal server error".to_string()),
+    }))]);
+    let provider = create_model_provider(
+        ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
+        /*auth_manager*/ None,
+    );
+    let (mut stream, _) = super::map_response_events(
+        Some("req-bedrock".to_string()),
+        api_stream,
+        test_session_telemetry(),
+        attempt,
+        provider,
+    );
+
+    let error = stream
+        .next()
+        .await
+        .expect("mapped stream should yield the Bedrock error")
+        .expect_err("Bedrock response should fail");
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InternalServerError
+    ));
+
+    let rollout = replay_bundle(temp.path())?;
+    let inference = rollout
+        .inference_calls
+        .values()
+        .next()
+        .expect("inference should be reduced");
+
+    assert_eq!(
+        inference.upstream_request_id,
+        Some("req-bedrock".to_string())
+    );
+    assert_eq!(
+        inference.failure,
+        Some(InferenceFailure {
+            message: codex_protocol::error::CodexErr::InternalServerError.to_string(),
+            http_status_code: Some(400),
+            codex_error_info: Some(CodexErrorInfo::InternalServerError),
+            mapped_error_retryable: Some(true),
+        }),
+    );
+
+    Ok(())
 }
 
 #[tokio::test]

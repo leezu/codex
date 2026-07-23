@@ -11,6 +11,13 @@ pub(super) const BEDROCK_EXPIRED_SIGNATURE_MESSAGE: &str = concat!(
 
 pub(super) fn map_api_error(error: ApiError) -> CodexErr {
     let error = codex_api::map_api_error(error);
+    if matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(message)
+            if message.trim().eq_ignore_ascii_case("Internal server error")
+    ) {
+        return CodexErr::InternalServerError;
+    }
     if let CodexErrorDetails::UnexpectedStatus(response) = error.details()
         && response.status == StatusCode::UNAUTHORIZED
         && response.body.contains("Signature expired:")

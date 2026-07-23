@@ -44,6 +44,7 @@ mod apply_patch_cli;
 mod approvals;
 mod audio_truncation;
 mod auto_review;
+mod bedrock_retry;
 mod catalog_permission_messages;
 mod cli_stream;
 mod client;

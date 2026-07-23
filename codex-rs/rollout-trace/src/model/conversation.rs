@@ -1,3 +1,4 @@
+use codex_protocol::protocol::CodexErrorInfo;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -169,6 +170,9 @@ pub struct InferenceCall {
     pub response_id: Option<String>,
     /// Request id returned by HTTP/proxy/engine infrastructure.
     pub upstream_request_id: Option<String>,
+    /// Structured provider failure details for a failed inference.
+    #[serde(default)]
+    pub failure: Option<InferenceFailure>,
     /// Complete ordered input snapshot sent with this request.
     pub request_item_ids: Vec<ConversationItemId>,
     /// Ordered output items produced by this response.
@@ -179,6 +183,18 @@ pub struct InferenceCall {
     pub raw_request_payload_id: RawPayloadId,
     /// Full upstream response payload. `None` while running or after pre-stream failures.
     pub raw_response_payload_id: Option<RawPayloadId>,
+}
+
+/// Diagnostic details retained for a failed inference call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferenceFailure {
+    pub message: String,
+    /// Original HTTP status observed before provider-specific error mapping.
+    pub http_status_code: Option<u16>,
+    /// Client-facing category produced by mapping the provider error.
+    pub codex_error_info: Option<CodexErrorInfo>,
+    /// Whether the mapped error is eligible for the normal turn retry loop.
+    pub mapped_error_retryable: Option<bool>,
 }
 
 /// Token usage summary for one inference call.

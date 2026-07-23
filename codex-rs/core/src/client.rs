@@ -82,10 +82,12 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
+use codex_rollout_trace::InferenceFailureMetadata;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
@@ -1481,7 +1483,12 @@ impl ModelClientSession {
                         extract_response_debug_context(&unauthorized_transport);
                     inference_trace_attempt.record_failed(
                         &unauthorized_transport,
-                        response_debug_context.request_id.as_deref(),
+                        InferenceFailureMetadata {
+                            upstream_request_id: response_debug_context.request_id.as_deref(),
+                            http_status_code: Some(status.as_u16()),
+                            codex_error_info: Some(CodexErrorInfo::Unauthorized),
+                            mapped_error_retryable: None,
+                        },
                         /*output_items*/ &[],
                     );
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
@@ -1498,10 +1505,16 @@ impl ModelClientSession {
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
+                    let http_status_code = api_error_http_status(&err);
                     let err = self.client.state.provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
-                        response_debug_context.request_id.as_deref(),
+                        InferenceFailureMetadata {
+                            upstream_request_id: response_debug_context.request_id.as_deref(),
+                            http_status_code,
+                            codex_error_info: Some(err.to_codex_protocol_error()),
+                            mapped_error_retryable: Some(err.is_retryable()),
+                        },
                         /*output_items*/ &[],
                     );
                     return Err(err);
@@ -1681,10 +1694,16 @@ impl ModelClientSession {
             self.websocket_session.last_response_from_untraced_warmup = warmup;
             let stream_result = stream_result.map_err(|err| {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);
+                let http_status_code = api_error_http_status(&err);
                 let err = self.client.state.provider.map_api_error(err);
                 inference_trace_attempt.record_failed(
                     &err,
-                    response_debug_context.request_id.as_deref(),
+                    InferenceFailureMetadata {
+                        upstream_request_id: response_debug_context.request_id.as_deref(),
+                        http_status_code,
+                        codex_error_info: Some(err.to_codex_protocol_error()),
+                        mapped_error_retryable: Some(err.is_retryable()),
+                    },
                     /*output_items*/ &[],
                 );
                 err
@@ -2056,6 +2075,7 @@ where
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
+                    let http_status_code = api_error_http_status(&err);
                     let upstream_request_id =
                         upstream_request_id.or(response_debug_context.request_id.as_deref());
                     if let Some(upstream_request_id) = upstream_request_id {
@@ -2064,7 +2084,12 @@ where
                     let mapped = provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &mapped,
-                        upstream_request_id,
+                        InferenceFailureMetadata {
+                            upstream_request_id,
+                            http_status_code,
+                            codex_error_info: Some(mapped.to_codex_protocol_error()),
+                            mapped_error_retryable: Some(mapped.is_retryable()),
+                        },
                         &items_added,
                     );
                     if !logged_error {
@@ -2079,7 +2104,10 @@ where
         }
         inference_trace_attempt.record_failed(
             "stream closed before response.completed",
-            upstream_request_id,
+            InferenceFailureMetadata {
+                upstream_request_id,
+                ..Default::default()
+            },
             &items_added,
         );
     });
@@ -2291,6 +2319,7 @@ async fn handle_unauthorized(
 fn api_error_http_status(error: &ApiError) -> Option<u16> {
     match error {
         ApiError::Transport(TransportError::Http { status, .. }) => Some(status.as_u16()),
+        ApiError::Api { status, .. } => Some(status.as_u16()),
         _ => None,
     }
 }
