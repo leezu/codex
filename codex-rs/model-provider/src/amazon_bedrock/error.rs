@@ -11,12 +11,33 @@ pub(super) const BEDROCK_EXPIRED_SIGNATURE_MESSAGE: &str = concat!(
 
 pub(super) fn map_api_error(error: ApiError) -> CodexErr {
     let error = codex_api::map_api_error(error);
-    if matches!(
-        error.details(),
-        CodexErrorDetails::InvalidRequest(message)
-            if message.trim().eq_ignore_ascii_case("Internal server error")
-    ) {
-        return CodexErr::InternalServerError;
+    if let CodexErrorDetails::InvalidRequest(message) = error.details() {
+        let message = message.trim();
+        let is_context_window_exceeded = message
+            .strip_prefix("prompt tokens (")
+            .and_then(|message| {
+                [
+                    ") exceed model maximum (",
+                    ") exceed customer model maximum (",
+                ]
+                .into_iter()
+                .find_map(|separator| message.split_once(separator))
+            })
+            .and_then(|(prompt_tokens, message)| {
+                let (model_maximum, model) = message.split_once(") for ")?;
+                Some((prompt_tokens, model_maximum, model))
+            })
+            .is_some_and(|(prompt_tokens, model_maximum, model)| {
+                prompt_tokens.parse::<u64>().is_ok()
+                    && model_maximum.parse::<u64>().is_ok()
+                    && !model.is_empty()
+            });
+        if is_context_window_exceeded {
+            return CodexErr::ContextWindowExceeded;
+        }
+        if message.eq_ignore_ascii_case("Internal server error") {
+            return CodexErr::InternalServerError;
+        }
     }
     if let CodexErrorDetails::UnexpectedStatus(response) = error.details()
         && response.status == StatusCode::UNAUTHORIZED

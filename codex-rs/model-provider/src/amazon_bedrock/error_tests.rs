@@ -77,6 +77,40 @@ fn signature_errors_with_other_statuses_remain_generic() {
 }
 
 #[test]
+fn prompt_token_limit_errors_are_context_window_errors() {
+    for message in [
+        "prompt tokens (282061) exceed model maximum (278528) for openai.gpt-5.6-sol",
+        "prompt tokens (483166) exceed customer model maximum (278528) for 7903dfda-4910-4bc7-86ca-ea247ecf6bd2",
+    ] {
+        let error = map_api_error(ApiError::InvalidRequest {
+            message: message.to_string(),
+        });
+
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::ContextWindowExceeded
+        ));
+    }
+}
+
+#[test]
+fn malformed_prompt_token_limit_errors_remain_invalid_requests() {
+    for message in [
+        "prompt tokens (many) exceed model maximum (278528) for openai.gpt-5.6-sol",
+        "prompt tokens (282061) exceed model maximum (278528)",
+    ] {
+        let error = map_api_error(ApiError::InvalidRequest {
+            message: message.to_string(),
+        });
+
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::InvalidRequest(_)
+        ));
+    }
+}
+
+#[test]
 fn internal_server_error_reported_as_bad_request_is_retryable() {
     let error = map_api_error(http_error(
         StatusCode::BAD_REQUEST,
