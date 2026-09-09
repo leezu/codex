@@ -428,6 +428,10 @@ fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap 
 }
 
 impl ModelClient {
+    pub(crate) fn provider(&self) -> &SharedModelProvider {
+        &self.state.provider
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Creates a new session-scoped `ModelClient`.
     ///
@@ -1576,6 +1580,7 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut provider_auth_recovery_attempted = false;
         let mut pending_retry = PendingUnauthorizedRetry::default();
+        let mut input_recovery_attempted = false;
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let endpoint = self
@@ -1640,6 +1645,10 @@ impl ModelClientSession {
             );
             self.client
                 .prepare_response_items_for_request(&mut request.input);
+            self.client
+                .state
+                .provider
+                .prepare_response_input(&mut request.input);
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1695,12 +1704,23 @@ impl ModelClientSession {
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
+                    let recovered = !input_recovery_attempted
+                        && self
+                            .client
+                            .state
+                            .provider
+                            .recover_response_input(&err, &prompt.input);
+                    // Preserve provider diagnostics before mapping to a user-facing error.
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
                         /*output_items*/ &[],
                     );
+                    let err = self.client.state.provider.map_api_error(err);
+                    if recovered {
+                        input_recovery_attempted = true;
+                        continue;
+                    }
                     return Err(err);
                 }
             }
@@ -1908,13 +1928,12 @@ impl ModelClientSession {
             self.websocket_session.last_response_from_untraced_warmup = warmup;
             let stream_result = stream_result.map_err(|err| {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);
-                let err = self.client.state.provider.map_api_error(err);
                 inference_trace_attempt.record_failed(
                     &err,
                     response_debug_context.request_id.as_deref(),
                     /*output_items*/ &[],
                 );
-                err
+                self.client.state.provider.map_api_error(err)
             })?;
             let (stream, last_request_rx) = map_response_stream(
                 stream_result,
@@ -2290,12 +2309,8 @@ where
                     if let Some(upstream_request_id) = upstream_request_id {
                         feedback_tags!(last_model_request_id = upstream_request_id);
                     }
+                    inference_trace_attempt.record_failed(&err, upstream_request_id, &items_added);
                     let mapped = provider.map_api_error(err);
-                    inference_trace_attempt.record_failed(
-                        &mapped,
-                        upstream_request_id,
-                        &items_added,
-                    );
                     if !logged_error {
                         session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;

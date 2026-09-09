@@ -45,6 +45,7 @@ mod apply_patch_serialization;
 mod approvals;
 mod audio_truncation;
 mod auto_review;
+mod bedrock_reasoning_recovery;
 mod catalog_permission_messages;
 mod cli_stream;
 mod client;
@@ -87,6 +88,7 @@ mod hooks;
 mod hooks_executor;
 #[cfg(not(target_os = "windows"))]
 mod hooks_mcp;
+mod http_error_tracing;
 mod image_rollout;
 mod injected_models_cache;
 #[cfg(not(target_os = "windows"))]

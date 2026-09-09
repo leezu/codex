@@ -144,6 +144,23 @@ pub trait ThreadStore: Any + Send + Sync {
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredThreadHistory>;
 
+    /// Loads source windows needed to regenerate encrypted compaction checkpoints.
+    ///
+    /// Unlike startup context, this replay must include history preceding checkpoints.
+    /// Paginated stores should bound the read and honor frozen fork boundaries.
+    fn load_compaction_history(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, StoredModelContext> {
+        Box::pin(async move {
+            let history = self.load_history(params).await?;
+            Ok(StoredModelContext {
+                thread_id: history.thread_id,
+                items: history.items,
+            })
+        })
+    }
+
     /// Loads the persisted rollout items needed to reconstruct the latest model-visible context.
     ///
     /// Implementations that cannot perform a targeted read may return the full persisted history.

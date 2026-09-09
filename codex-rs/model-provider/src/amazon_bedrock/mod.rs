@@ -4,6 +4,7 @@ mod catalog;
 mod credential_export;
 mod error;
 mod mantle;
+mod reasoning_recovery;
 mod runtime;
 mod runtime_catalog;
 
@@ -27,6 +28,7 @@ use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 
 use crate::auth::auth_manager_for_provider;
@@ -65,6 +67,7 @@ pub(crate) struct AmazonBedrockModelProvider {
     auth_manager: Option<Arc<AuthManager>>,
     credential_export: Option<Arc<AwsCredentialExport>>,
     auth_recovery: Option<Arc<AwsAuthRecovery>>,
+    reasoning_recovery: Arc<reasoning_recovery::ReasoningRecovery>,
 }
 
 impl AmazonBedrockModelProvider {
@@ -111,6 +114,7 @@ impl AmazonBedrockModelProvider {
             auth_manager,
             credential_export,
             auth_recovery,
+            reasoning_recovery: Arc::default(),
         }
     }
 
@@ -335,6 +339,30 @@ impl ModelProvider for AmazonBedrockModelProvider {
 
     fn map_api_error(&self, error: ApiError) -> CodexErr {
         error::map_api_error(error)
+    }
+
+    fn prepare_response_input(&self, input: &mut Vec<ResponseItem>) {
+        self.reasoning_recovery.prepare(input);
+    }
+
+    fn recover_response_input(&self, error: &ApiError, input: &[ResponseItem]) -> bool {
+        self.reasoning_recovery.recover(error, input)
+    }
+
+    fn is_compaction_recovery_candidate(&self, error: &CodexErr) -> bool {
+        match error.details() {
+            codex_protocol::error::CodexErrorDetails::InvalidRequest(body) => {
+                reasoning_recovery::is_region_error(body)
+            }
+            // The session only takes this fallback when a checkpoint is present,
+            // after transport retries, and regenerates it at most once per request.
+            codex_protocol::error::CodexErrorDetails::InternalServerError => true,
+            _ => false,
+        }
+    }
+
+    fn install_compaction_replacements(&self, items: Vec<(ResponseItem, ResponseItem)>) -> bool {
+        self.reasoning_recovery.install_compactions(items)
     }
 
     fn api_provider(&self) -> ModelProviderFuture<'_, Result<Provider>> {

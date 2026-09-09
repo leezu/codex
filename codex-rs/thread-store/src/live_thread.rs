@@ -303,6 +303,16 @@ impl LiveThread {
             .await
     }
 
+    /// Loads durable source windows for checkpoint recovery, including inherited history.
+    pub async fn load_compaction_history(&self) -> ThreadStoreResult<crate::StoredModelContext> {
+        self.thread_store
+            .load_compaction_history(LoadThreadHistoryParams {
+                thread_id: self.thread_id,
+                include_archived: false,
+            })
+            .await
+    }
+
     pub async fn read_thread(
         &self,
         include_archived: bool,

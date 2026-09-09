@@ -1447,6 +1447,7 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
+    let mut compaction_recovery_attempted = false;
     loop {
         // A retry must not attribute the next tool call to the previous response.
         turn_context
@@ -1499,6 +1500,15 @@ async fn run_sampling_request(
                 _ => err,
             },
         };
+
+        if !compaction_recovery_attempted
+            && sess
+                .recover_region_scoped_compaction(&step_context, &err)
+                .await?
+        {
+            compaction_recovery_attempted = true;
+            continue;
+        }
 
         if original_input.is_none() {
             original_input = Some(prompt.input);

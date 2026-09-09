@@ -21,6 +21,7 @@ use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
 use codex_protocol::error::CodexErr;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderValue;
 
@@ -148,6 +149,29 @@ pub const DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL: &str = "gpt-5.6-terra";
 pub trait ModelProvider: fmt::Debug + Send + Sync {
     /// Returns the configured provider metadata.
     fn info(&self) -> &ModelProviderInfo;
+
+    /// Applies provider-specific replay restrictions to outgoing response items.
+    /// Implementations must leave the caller's persisted conversation history intact.
+    fn prepare_response_input(&self, _input: &mut Vec<ResponseItem>) {}
+
+    /// Records rejected input that can be omitted on a single fresh response attempt.
+    /// Returns true only when retrying the input will make progress.
+    fn recover_response_input(&self, _error: &ApiError, _input: &[ResponseItem]) -> bool {
+        false
+    }
+
+    /// Identifies failures that may be caused by incompatible encrypted checkpoints.
+    /// Callers must require a checkpoint and bound regeneration attempts; a candidate
+    /// error alone does not establish that encrypted state caused the failure.
+    fn is_compaction_recovery_candidate(&self, _error: &CodexErr) -> bool {
+        false
+    }
+
+    /// Atomically installs regenerated checkpoints for outgoing requests, leaving saved history
+    /// intact. Returns false if the provider cannot retain all replacements within its limits.
+    fn install_compaction_replacements(&self, _items: Vec<(ResponseItem, ResponseItem)>) -> bool {
+        false
+    }
 
     /// Returns the provider-owned capability upper bounds.
     fn capabilities(&self) -> ProviderCapabilities {

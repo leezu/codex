@@ -101,7 +101,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         Some(client_session) => client_session,
         None => owned_client_session.insert(sess.services.model_client.new_session()),
     };
-    let compaction_output_result = run_remote_compaction_request_v2(
+    let mut compaction_output_result = run_remote_compaction_request_v2(
         sess,
         step_context,
         client_session,
@@ -109,6 +109,20 @@ pub(super) async fn run_remote_compact_v2_attempt(
         &responses_metadata,
     )
     .await;
+    if let Err(error) = &compaction_output_result
+        && sess
+            .recover_region_scoped_compaction(step_context, error)
+            .await?
+    {
+        compaction_output_result = run_remote_compaction_request_v2(
+            sess,
+            step_context,
+            client_session,
+            &prompt,
+            &responses_metadata,
+        )
+        .await;
+    }
     trace_attempt.record_result(
         compaction_output_result
             .as_ref()
