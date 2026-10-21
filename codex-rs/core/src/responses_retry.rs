@@ -1,6 +1,7 @@
 //! Shared retry and transport fallback decisions for Responses requests.
 //! Content-filter guidance is recorded for sampling requests before retry decisions.
-//! Server advice controls timing without extending configured retry limits.
+//! Server advice controls timing. Bedrock compaction stream disconnects retry until cancelled;
+//! other failures retain their configured retry limits.
 
 use std::time::Duration;
 
@@ -22,6 +23,9 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const MAX_COMPACTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+// The tenth exponential backoff already exceeds the delay cap, even with jitter.
+const MAX_COMPACTION_BACKOFF_ATTEMPT: u64 = 10;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -84,11 +88,27 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
+    // A disconnected Bedrock compaction stream leaves the original history intact. Keep
+    // retrying that request instead of ending a long-running turn after the small compact
+    // retry budget. The task's existing cancellation handling also interrupts retry sleeps.
+    let retry_until_cancelled = matches!(request, ResponsesStreamRequest::RemoteCompactionV2)
+        && turn_context.provider.info().is_amazon_bedrock()
+        && matches!(err.details(), CodexErrorDetails::Stream(_));
     let retry_count = retry_state.retries.saturating_add(1);
-    let Some(delay) = err.retry_delay(retry_count) else {
+    let backoff_attempt = if retry_until_cancelled {
+        retry_count.min(MAX_COMPACTION_BACKOFF_ATTEMPT)
+    } else {
+        retry_count
+    };
+    let Some(delay) = err.retry_delay(backoff_attempt) else {
         return Err(err);
     };
     let retry_after = err.retry_after();
+    let delay = if retry_until_cancelled && retry_after.is_none() {
+        delay.min(MAX_COMPACTION_RETRY_DELAY)
+    } else {
+        delay
+    };
 
     if turn_context
         .config
@@ -138,13 +158,24 @@ pub(crate) async fn handle_response_stream_error(
         return Ok(());
     }
 
-    if retry_state.retries < max_retries {
+    if retry_state.retries < max_retries || retry_until_cancelled {
         retry_state.retries = retry_count;
-        log_retry(request, turn_context, &err, retry_count, max_retries, delay);
+        if retry_until_cancelled {
+            warn!(
+                turn_id = %turn_context.sub_id,
+                retries = retry_count,
+                ?delay,
+                compact_error = %err,
+                "remote compaction v2 stream disconnected; retrying until cancelled"
+            );
+        } else {
+            log_retry(request, turn_context, &err, retry_count, max_retries, delay);
+        }
 
         // In release builds, hide the first websocket retry notification to reduce noisy
         // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
-        let report_error = retry_count > 1
+        let report_error = retry_until_cancelled
+            || retry_count > 1
             || cfg!(debug_assertions)
             || !sess.services.model_client.responses_websocket_enabled();
         if report_error {
@@ -152,7 +183,11 @@ pub(crate) async fn handle_response_stream_error(
             // happening instead of staring at a seemingly frozen screen.
             sess.notify_stream_error(
                 turn_context,
-                format!("Reconnecting... {retry_count}/{max_retries}"),
+                if retry_until_cancelled {
+                    format!("Retrying compaction... attempt {retry_count}")
+                } else {
+                    format!("Reconnecting... {retry_count}/{max_retries}")
+                },
                 err,
             )
             .await;
